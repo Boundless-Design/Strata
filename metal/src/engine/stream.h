@@ -127,6 +127,9 @@ private:
     uint64_t lookups_ = 0, hits_ = 0, pre_hits_ = 0, late_ = 0, misses_ = 0, pre_issued_ = 0, pre_cancel_ = 0, windows_ = 0;
     std::atomic<uint64_t> bytes_read_{0}, reads_{0};
     double wait_ms_ = 0, host_ms_ = 0, fill_s_ = 0;
+    // Wall time inside ahead(), decode only.  STRATA_METAL_TIME_AHEAD=1.  Not part of host_ms_.
+    double ahead_ms_ = 0;
+    bool time_ahead_ = false;
     uint64_t fill_bytes_ = 0;
 };
 

@@ -160,6 +160,8 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
     pre_mru_ = env_int("STRATA_METAL_PREFETCH_MRU", big ? 0 : 1) != 0;
     // timing only (WRONG answers): every missing expert is pointed at slot 0, nothing is read
     fake_ = env_int("STRATA_METAL_STREAM_FAKE", 0) != 0;
+    // Wall time inside ahead(), off unless asked.  The default report and host_ms_ stay as they are.
+    time_ahead_ = env_int("STRATA_METAL_TIME_AHEAD", 0) != 0;
     return true;
 }
 
@@ -570,6 +572,7 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
 
 // the experts a predicted routing names, most likely first (by the best logit over the window's tokens)
 void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
+    const double ta = time_ahead_ ? now_ms() : 0;
     K = std::min(K, 32);
     std::pair<float, int> pw[8 * 32];
     int np = 0;
@@ -609,6 +612,7 @@ void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
         }
     }
     if (any) cv_.notify_all();
+    if (time_ahead_) ahead_ms_ += now_ms() - ta;
 }
 
 void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2,
@@ -799,7 +803,7 @@ void ExpertStream::reset_stats() {
     p_wait_ms_ = p_host_ms_ = 0;
     bytes_read_ = 0;
     reads_ = 0;
-    wait_ms_ = host_ms_ = 0;
+    wait_ms_ = host_ms_ = ahead_ms_ = 0;
 }
 
 void ExpertStream::report(FILE* f) const {
@@ -821,6 +825,9 @@ void ExpertStream::report(FILE* f) const {
                  (unsigned long long) late_, misses_ / std::max(1.0, (double) lookups_), misses_ / w,
                  (unsigned long long) pre_issued_, pre_issued_ / w, (unsigned long long) pre_cancel_,
                  (bytes_read_.load() - 0) / 1e6 / w, (unsigned long long) reads_.load(), host_ms_ / w, wait_ms_ / w);
+    if (time_ahead_)
+        std::fprintf(f, "expert stream ahead-time %.3f ms total over %llu decode windows (%.3f ms per window)\n",
+                     ahead_ms_, (unsigned long long) windows_, ahead_ms_ / w);
 }
 
 }  // namespace strata::metal_engine
