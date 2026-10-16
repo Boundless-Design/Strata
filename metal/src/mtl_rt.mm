@@ -38,6 +38,13 @@ struct Context::Impl {
     uint64_t rel_value = 0;
     bool time_ahead = false;      // STRATA_METAL_TIME_AHEAD: stamp the pre-commit encode
     double last_encode_ms = 0;
+    int capture_window = 0;       // STRATA_METAL_CAPTURE_WINDOW, 0 = off
+    int decode_seen = 0;          // decode windows armed so far; counted only while capture_window > 0
+    bool capture_armed = false;   // the command buffer about to be created is window N
+    bool capture_active = false;  // MTLCaptureManager is recording that buffer
+    std::string capture_path;
+    void begin_capture(id<MTLCommandBuffer> cb);
+    void end_capture();
 };
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
@@ -46,6 +53,10 @@ static std::string g_device_name = "unknown GPU";
 
 Context::Context() : impl_(new Impl) {
     if (const char* e = std::getenv("STRATA_METAL_TIME_AHEAD")) impl_->time_ahead = e[0] && std::atoi(e) != 0;
+    if (const char* e = std::getenv("STRATA_METAL_CAPTURE_WINDOW")) {
+        const int n = std::atoi(e);
+        if (n > 0) impl_->capture_window = n;
+    }
     impl_->dev = MTLCreateSystemDefaultDevice();
     if (!impl_->dev) {
         std::fprintf(stderr, "mtl: no Metal device\n");
@@ -255,6 +266,7 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
 double Context::run_graph(const std::vector<Dispatch>& ds) {
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        if (impl_->capture_window > 0) impl_->begin_capture(cb);
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
         for (size_t i = 0; i < ds.size(); ++i) {
             if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -263,6 +275,7 @@ double Context::run_graph(const std::vector<Dispatch>& ds) {
         [enc endEncoding];
         [cb commit];
         [cb waitUntilCompleted];
+        if (impl_->capture_window > 0) impl_->end_capture();
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
             std::exit(5);
@@ -279,6 +292,51 @@ void Context::release_seg() {
 
 double Context::last_encode_ms() const { return impl_->last_encode_ms; }
 
+int Context::capture_window() const { return impl_->capture_window; }
+
+void Context::arm_capture() {
+    if (impl_->capture_window <= 0) return;
+    if (++impl_->decode_seen == impl_->capture_window) impl_->capture_armed = true;
+}
+
+// Start after the command buffer exists and before it is committed.  Stop after it has completed, so the trace
+// document holds that one buffer.  Both calls are skipped unless a decode window armed this buffer.
+void Context::Impl::begin_capture(id<MTLCommandBuffer> cb) {
+    if (!capture_armed) return;
+    capture_armed = false;
+    const int n = capture_window;
+    NSString* path = [NSString stringWithFormat:@"/tmp/strata-window-%d.gputrace", n];
+    NSURL* url = [NSURL fileURLWithPath:path];
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    MTLCaptureManager* mgr = [MTLCaptureManager sharedCaptureManager];
+    if (![mgr supportsDestination:MTLCaptureDestinationGPUTraceDocument]) {
+        std::fprintf(stderr, "mtl: GPU trace documents are not supported\n");
+        std::exit(5);
+    }
+    MTLCaptureDescriptor* desc = [[MTLCaptureDescriptor alloc] init];
+    desc.captureObject = cb;
+    desc.destination = MTLCaptureDestinationGPUTraceDocument;
+    desc.outputURL = url;
+    cb.label = [NSString stringWithFormat:@"decode-window-%d", n];
+    NSError* err = nil;
+    if (![mgr startCaptureWithDescriptor:desc error:&err]) {
+        const char* msg = err ? [[err localizedDescription] UTF8String] : nullptr;
+        std::fprintf(stderr, "mtl: GPU capture of decode window %d failed: %s\n", n, msg ? msg : "unknown");
+        std::fprintf(stderr, "mtl: METAL_CAPTURE_ENABLED=1 is required\n");
+        std::exit(5);
+    }
+    capture_active = true;
+    capture_path = [path UTF8String];
+    std::fprintf(stderr, "strata metal: GPU capture of decode window %d -> %s\n", n, capture_path.c_str());
+}
+
+void Context::Impl::end_capture() {
+    if (!capture_active) return;
+    [[MTLCaptureManager sharedCaptureManager] stopCapture];
+    capture_active = false;
+    std::fprintf(stderr, "strata metal: GPU capture wrote %s\n", capture_path.c_str());
+}
+
 double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
                               void* user) {
     @autoreleasepool {
@@ -286,6 +344,7 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
         id<MTLSharedEvent> ev = impl_->ev;
         const uint64_t base = impl_->ev_v;
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        if (impl_->capture_window > 0) impl_->begin_capture(cb);
         const double enc0 = impl_->time_ahead ? now_s() : 0;
         size_t i = 0;
         for (size_t s = 0; s <= cuts.size(); ++s) {
@@ -319,6 +378,7 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
         }
         impl_->ev_v = base + 2 * cuts.size() + 2;
         [cb waitUntilCompleted];
+        if (impl_->capture_window > 0) impl_->end_capture();
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
             std::exit(5);

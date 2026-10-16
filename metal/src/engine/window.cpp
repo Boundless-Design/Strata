@@ -1106,6 +1106,9 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
 }
 
 double Window::run_ds(Cached& c) {
+    // One decode window.  Prompt chunks call run_graph_seg themselves and are not counted.  Unset, this branch
+    // is not taken and the capture manager is not used.
+    if (cx_->capture_window() > 0) cx_->arm_capture();
     if (!stream_) return cx_->run_graph(c.ds);
     return cx_->run_graph_seg(c.ds, c.cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
 }
