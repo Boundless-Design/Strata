@@ -43,7 +43,7 @@ struct Context::Impl {
     bool capture_armed = false;   // the command buffer about to be created is window N
     bool capture_active = false;  // MTLCaptureManager is recording that buffer
     std::string capture_path;
-    void begin_capture(id<MTLCommandBuffer> cb);
+    void begin_capture();
     void end_capture();
 };
 
@@ -265,8 +265,10 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
 
 double Context::run_graph(const std::vector<Dispatch>& ds) {
     @autoreleasepool {
+        if (impl_->capture_window > 0) impl_->begin_capture();
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
-        if (impl_->capture_window > 0) impl_->begin_capture(cb);
+        if (impl_->capture_active)
+            cb.label = [NSString stringWithFormat:@"decode-window-%d", impl_->capture_window];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
         for (size_t i = 0; i < ds.size(); ++i) {
             if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -299,9 +301,9 @@ void Context::arm_capture() {
     if (++impl_->decode_seen == impl_->capture_window) impl_->capture_armed = true;
 }
 
-// Start after the command buffer exists and before it is committed.  Stop after it has completed, so the trace
+// Start just before the window's command buffer is created.  Stop after it has completed, so the trace
 // document holds that one buffer.  Both calls are skipped unless a decode window armed this buffer.
-void Context::Impl::begin_capture(id<MTLCommandBuffer> cb) {
+void Context::Impl::begin_capture() {
     if (!capture_armed) return;
     capture_armed = false;
     const int n = capture_window;
@@ -313,11 +315,13 @@ void Context::Impl::begin_capture(id<MTLCommandBuffer> cb) {
         std::fprintf(stderr, "mtl: GPU trace documents are not supported\n");
         std::exit(5);
     }
+    // The capture layer wraps every command buffer.  That wrapper cannot be a captureObject
+    // ("CaptureMTLCommandBuffer cannot be captured").  Apple's capture manager records the
+    // command buffers created after start and committed before stop, so the queue is the object.
     MTLCaptureDescriptor* desc = [[MTLCaptureDescriptor alloc] init];
-    desc.captureObject = cb;
+    desc.captureObject = q;
     desc.destination = MTLCaptureDestinationGPUTraceDocument;
     desc.outputURL = url;
-    cb.label = [NSString stringWithFormat:@"decode-window-%d", n];
     NSError* err = nil;
     if (![mgr startCaptureWithDescriptor:desc error:&err]) {
         const char* msg = err ? [[err localizedDescription] UTF8String] : nullptr;
@@ -343,8 +347,10 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
         if (impl_->ev == nil) impl_->ev = [impl_->dev newSharedEvent];
         id<MTLSharedEvent> ev = impl_->ev;
         const uint64_t base = impl_->ev_v;
+        if (impl_->capture_window > 0) impl_->begin_capture();
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
-        if (impl_->capture_window > 0) impl_->begin_capture(cb);
+        if (impl_->capture_active)
+            cb.label = [NSString stringWithFormat:@"decode-window-%d", impl_->capture_window];
         const double enc0 = impl_->time_ahead ? now_s() : 0;
         size_t i = 0;
         for (size_t s = 0; s <= cuts.size(); ++s) {

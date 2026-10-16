@@ -109,12 +109,14 @@ public:
     // loop.  Nonzero only when STRATA_METAL_TIME_AHEAD=1.  The default path does not read the clock.
     double last_encode_ms() const;
     // STRATA_METAL_CAPTURE_WINDOW=N (N >= 1).  0 when the variable is unset or not positive.  The Nth decode
-    // window (Window::run, one-based, not a prompt chunk) has its command buffer wrapped in MTLCaptureManager
-    // and written to /tmp/strata-window-N.gputrace.  That needs METAL_CAPTURE_ENABLED=1.  When this is 0 the
-    // capture manager is not used, and the command buffer is created, encoded, committed, and waited as before.
+    // window (Window::run, one-based, not a prompt chunk) is written to /tmp/strata-window-N.gputrace.  The
+    // capture layer's command buffer cannot be a captureObject, so the command queue is captured from just
+    // before that window's command buffer is created until the buffer completes.  No other command buffer is
+    // created on the queue in between.  Requires METAL_CAPTURE_ENABLED=1.  When this is 0 the capture manager
+    // is not used, and the command buffer is created, encoded, committed, and waited as before.
     int capture_window() const;
     // Count one decode window.  Call only when capture_window() > 0.  On window N, the next run_graph or
-    // run_graph_seg wraps the command buffer it creates.
+    // run_graph_seg captures the command buffer it is about to create.
     void arm_capture();
     // One command buffer per `run_cb` call, empty or not: measures commit+wait round trips.
     double run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds = nullptr);
