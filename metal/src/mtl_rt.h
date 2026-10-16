@@ -105,6 +105,9 @@ public:
                          void* user);
     // Store the armed segment release.  No-op when run_graph_seg has not armed one, or it was already stored.
     void release_seg();
+    // Host milliseconds spent building and committing the last run_graph_seg command buffer, before the wait
+    // loop.  Nonzero only when STRATA_METAL_TIME_AHEAD=1.  The default path does not read the clock.
+    double last_encode_ms() const;
     // One command buffer per `run_cb` call, empty or not: measures commit+wait round trips.
     double run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds = nullptr);
 

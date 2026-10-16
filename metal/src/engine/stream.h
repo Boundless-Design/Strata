@@ -129,6 +129,8 @@ private:
     double wait_ms_ = 0, host_ms_ = 0, fill_s_ = 0;
     // Wall time inside ahead(), decode only.  STRATA_METAL_TIME_AHEAD=1.  Not part of host_ms_.
     double ahead_ms_ = 0;
+    // done_cv_ wait on decode layers that submitted no miss (in-flight read-ahead only).  Same switch.
+    double late_only_ms_ = 0;
     bool time_ahead_ = false;
     uint64_t fill_bytes_ = 0;
 };

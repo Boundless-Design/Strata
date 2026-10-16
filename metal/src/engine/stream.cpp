@@ -645,6 +645,7 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
         return;
     }
     std::vector<int> wait;
+    bool layer_miss = false;
     {
         std::lock_guard<std::mutex> g(mu_);
         // read-aheads of this layer (or older) that were not started and are not wanted: dropped (the slot goes free)
@@ -679,6 +680,7 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
                 continue;
             }
             ++(prompt ? p_misses_ : misses_);
+            layer_miss = true;
             s = victim(lay_[(size_t) l].cls);
             if (s < 0) { std::fprintf(stderr, "strata metal stream: no free slot (layer %d)\n", l); std::exit(6); }
             submit(s, l, e, true);
@@ -695,7 +697,9 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
             for (int s : wait) if (slots_[(size_t) s].state.load() != 0) return false;
             return true;
         });
-        (prompt ? p_wait_ms_ : wait_ms_) += now_ms() - tw;
+        const double dw = now_ms() - tw;
+        (prompt ? p_wait_ms_ : wait_ms_) += dw;
+        if (time_ahead_ && !prompt && !layer_miss) late_only_ms_ += dw;
     }
     if (prompt) {
         // a chunk uses nearly all of the next layer's experts: every one not in the arena is streamed in behind this
@@ -803,7 +807,7 @@ void ExpertStream::reset_stats() {
     p_wait_ms_ = p_host_ms_ = 0;
     bytes_read_ = 0;
     reads_ = 0;
-    wait_ms_ = host_ms_ = ahead_ms_ = 0;
+    wait_ms_ = host_ms_ = ahead_ms_ = late_only_ms_ = 0;
 }
 
 void ExpertStream::report(FILE* f) const {
@@ -826,8 +830,11 @@ void ExpertStream::report(FILE* f) const {
                  (unsigned long long) pre_issued_, pre_issued_ / w, (unsigned long long) pre_cancel_,
                  (bytes_read_.load() - 0) / 1e6 / w, (unsigned long long) reads_.load(), host_ms_ / w, wait_ms_ / w);
     if (time_ahead_)
-        std::fprintf(f, "expert stream ahead-time %.3f ms total over %llu decode windows (%.3f ms per window)\n",
-                     ahead_ms_, (unsigned long long) windows_, ahead_ms_ / w);
+        std::fprintf(f, "expert stream ahead-time %.3f ms total over %llu decode windows (%.3f ms per window); "
+                        "late-only wait %.3f ms; misses %llu hits %llu read-ahead hits %llu late %llu\n",
+                     ahead_ms_, (unsigned long long) windows_, ahead_ms_ / w, late_only_ms_,
+                     (unsigned long long) misses_, (unsigned long long) hits_, (unsigned long long) pre_hits_,
+                     (unsigned long long) late_);
 }
 
 }  // namespace strata::metal_engine

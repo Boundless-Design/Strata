@@ -282,13 +282,20 @@ public:
     void stream_report(FILE* f) const {
         if (!st_) return;
         st_->report(f);
+        int decode_n = 0;
         for (int t = 1; t <= MAXT; ++t)
-            if (win_n_[t])
+            if (win_n_[t]) {
+                if (t != 8) decode_n += win_n_[t];
                 std::fprintf(f, "stream windows T=%d     %d (%s): %.2f ms each (GPU incl. the host's turns %.2f ms)\n", t, win_n_[t],
                              t == 8 ? "prompt rows" : "decode", win_ms_[t] / win_n_[t], win_gpu_[t] / win_n_[t]);
+            }
+        if (const char* e = std::getenv("STRATA_METAL_TIME_AHEAD"); e && e[0] && std::atoi(e) != 0)
+            std::fprintf(f, "stream encode-before-commit %.3f ms total over %d decode windows (%.3f ms per window)\n",
+                         enc_ms_, decode_n, enc_ms_ / std::max(1, decode_n));
     }
     int win_n_[MAXT + 1] = {};
     double win_ms_[MAXT + 1] = {}, win_gpu_[MAXT + 1] = {};
+    double enc_ms_ = 0;   // STRATA_METAL_TIME_AHEAD: pre-commit encode of decode windows
     void at_cut(int s) {
         st_->at_layer(s, seg_T_, TOPK, cut_ids_ ? cut_ids_ : ids_.as<int32_t>(), st_pred_ && !cut_ids_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
                       predL2_.ptr && !cut_ids_ ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
@@ -1005,6 +1012,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         seg_T_ = Tn;
         const double r0 = now_ms();
         last_gpu_ms_ = 1000.0 * run_ds(c);
+        if (Tn < 8) enc_ms_ += cx_->last_encode_ms();
         {
             static const int kt = std::getenv("STRATA_METAL_KPROF") ? std::atoi(std::getenv("STRATA_METAL_KPROF")) : 0;
             static int seen = 0;
@@ -1089,6 +1097,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     seg_T_ = Tn;
     const double r0 = now_ms();
     last_gpu_ms_ = 1000.0 * run_ds(cw);
+    if (Tn < 8) enc_ms_ += cx_->last_encode_ms();
     tp_rg_ = now_ms() - r0;
     last_n_disp_ = (int) ds.size();
     return finish(Tn, tokens, pos0, head, out, t0);

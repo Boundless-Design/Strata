@@ -36,6 +36,8 @@ struct Context::Impl {
     bool rel_armed = false;       // a segment release the host may store before at_cut returns
     bool rel_fired = false;
     uint64_t rel_value = 0;
+    bool time_ahead = false;      // STRATA_METAL_TIME_AHEAD: stamp the pre-commit encode
+    double last_encode_ms = 0;
 };
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
@@ -43,6 +45,7 @@ static inline id<MTLComputePipelineState> P(const Pipeline* p) { return (__bridg
 static std::string g_device_name = "unknown GPU";
 
 Context::Context() : impl_(new Impl) {
+    if (const char* e = std::getenv("STRATA_METAL_TIME_AHEAD")) impl_->time_ahead = e[0] && std::atoi(e) != 0;
     impl_->dev = MTLCreateSystemDefaultDevice();
     if (!impl_->dev) {
         std::fprintf(stderr, "mtl: no Metal device\n");
@@ -274,6 +277,8 @@ void Context::release_seg() {
     impl_->ev.signaledValue = impl_->rel_value;
 }
 
+double Context::last_encode_ms() const { return impl_->last_encode_ms; }
+
 double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
                               void* user) {
     @autoreleasepool {
@@ -281,6 +286,7 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
         id<MTLSharedEvent> ev = impl_->ev;
         const uint64_t base = impl_->ev_v;
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        const double enc0 = impl_->time_ahead ? now_s() : 0;
         size_t i = 0;
         for (size_t s = 0; s <= cuts.size(); ++s) {
             const size_t end = s < cuts.size() ? (size_t) cuts[s] : ds.size();
@@ -297,6 +303,7 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
             }
         }
         [cb commit];
+        impl_->last_encode_ms = impl_->time_ahead ? (now_s() - enc0) * 1e3 : 0;
         for (size_t s = 0; s < cuts.size(); ++s) {
             const uint64_t want = base + 2 * s + 1;
             while (ev.signaledValue < want) {
