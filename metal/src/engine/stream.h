@@ -61,12 +61,14 @@ public:
     uint64_t down_in_slot(int l) const { return lay_[(size_t) l].gs + lay_[(size_t) l].us; }
     // The host's turn at layer l: ids = the window's T x topk routed ids; pred = T x 512 router logits of layer l + 1
     // computed from this layer's FFN input (nullptr: no read-ahead).
-    // pred2: layer l + 2's, from the same input, queued at this cut (two encoders ahead).
-    // STRATA_METAL_PREFETCH2 > 0 overrides that queue's depth; 0 uses the same depth as layer l + 1.
+    // pred2: layer l + 2's, from the same input. Off unless STRATA_METAL_PREFETCH2 > 0 (queued
+    // after layer l + 1, at that depth) or STRATA_METAL_PREFETCH_EARLY=1 (queued at this cut,
+    // before layer l + 1, at pre_k_, or at the PREFETCH2 depth when that is also set).
     // ready, when set, is called once after this layer's experts are published and before read-ahead.
     void at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2 = nullptr,
                   void (*ready)(void*) = nullptr, void* ready_user = nullptr);
     int ahead2() const { return pre_k2_; }
+    bool prefetch_early() const { return prefetch_early_; }
     // a prompt's scratch buffers inside the arena: region() places them (once), hold_region() empties and holds its
     // slots while a prompt runs and gives them back after
     uint8_t* region(uint64_t bytes);
@@ -120,7 +122,7 @@ private:
     bool stop_ = false;
     int outstanding_ = 0;
     int nio_ = 6, pre_k_ = 10, pre_k2_ = 0, split_ = 2;
-    bool prefetch_ = true, fake_ = false, pre_mru_ = false;
+    bool prefetch_ = true, fake_ = false, pre_mru_ = false, prefetch_early_ = false;
     // stats
     uint64_t stamp_ = 1;   // the handshake count: slots pinned with the current one are in use on the GPU
     uint64_t p_lookups_ = 0, p_hits_ = 0, p_pre_ = 0, p_misses_ = 0, p_streamed_ = 0, p_chunks_ = 0;

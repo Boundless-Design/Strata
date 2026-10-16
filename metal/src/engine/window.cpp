@@ -551,8 +551,9 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         const char* e = std::getenv("STRATA_METAL_PREFETCH");
         st_pred_ = !(e && std::atoi(e) <= 0);
         if (st_pred_) predL_ = A(4 * (size_t) 48 * MAXT * 512);
-        // Layer l+2's logits, so this cut can queue that layer one cut before ahead(l+1) used to.
-        if (st_pred_) predL2_ = A(4 * (size_t) 48 * MAXT * 512);
+        // The l+2 GEMV reads predL2_. Off unless PREFETCH2 > 0 or PREFETCH_EARLY=1, so the
+        // default graph does not dispatch it.
+        if (st_pred_ && (st_->ahead2() > 0 || st_->prefetch_early())) predL2_ = A(4 * (size_t) 48 * MAXT * 512);
     }
     ple_on_ = ss.ple.ready() && f_.find("blk.1.ple_key.weight") != nullptr;
     if (ple_on_ && T("blk.1.ple_conv1d.weight").type == ref::F32) {

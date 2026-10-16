@@ -156,6 +156,8 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
     const bool big = (double) eb / NL > 1.5e6;
     pre_k_ = env_int("STRATA_METAL_PREFETCH", big ? 6 : 10);
     pre_k2_ = env_int("STRATA_METAL_PREFETCH2", 0);
+    // Fix 3's early l+2 queue. Default off: the schedule below matches fix 4.
+    prefetch_early_ = env_int("STRATA_METAL_PREFETCH_EARLY", 0) != 0;
     prefetch_ = pre_k_ > 0;
     pre_mru_ = env_int("STRATA_METAL_PREFETCH_MRU", big ? 0 : 1) != 0;
     // timing only (WRONG answers): every missing expert is pointed at slot 0, nothing is read
@@ -724,12 +726,14 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
         return;
     }
     fire();
-    // Fix 3. Queue layer l+2 at this cut, which is the cut before ahead(l+1) at layer l+1
-    // would have started those experts, so the pread overlaps two encoders. The layer l+1
-    // queue stays and only submits names that are not already in flight. A positive
-    // STRATA_METAL_PREFETCH2 overrides the l+2 depth. Zero uses pre_k_.
-    if (prefetch_ && pred2 && l + 2 < NL) ahead(l + 2, T, pred2, pre_k2_ > 0 ? pre_k2_ : pre_k_);
+    // STRATA_METAL_PREFETCH_EARLY=1 queues layer l+2 at this cut, one cut before ahead(l+1)
+    // at layer l+1 would start those experts. Depth is pre_k_, or pre_k2_ when that is set.
+    // Unset: the fix 4 schedule, ahead(l+1) then ahead(l+2) only when pre_k2_ > 0.
+    if (prefetch_early_ && prefetch_ && pred2 && l + 2 < NL)
+        ahead(l + 2, T, pred2, pre_k2_ > 0 ? pre_k2_ : pre_k_);
+    // read-ahead: layer l + 1 (each token's top pre_k_ of the predicted router logits), then layer l + 2 (top pre_k2_)
     if (prefetch_ && pred && l + 1 < NL) ahead(l + 1, T, pred, pre_k_);
+    if (!prefetch_early_ && pre_k2_ > 0 && pred2 && l + 2 < NL) ahead(l + 2, T, pred2, pre_k2_);
     host_ms_ += now_ms() - t0;
 }
 
