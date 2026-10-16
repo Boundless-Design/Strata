@@ -724,9 +724,12 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
         return;
     }
     fire();
-    // read-ahead: layer l + 1 (each token's top pre_k_ of the predicted router logits), then layer l + 2 (top pre_k2_)
+    // Fix 3. Queue layer l+2 at this cut, which is the cut before ahead(l+1) at layer l+1
+    // would have started those experts, so the pread overlaps two encoders. The layer l+1
+    // queue stays and only submits names that are not already in flight. A positive
+    // STRATA_METAL_PREFETCH2 overrides the l+2 depth. Zero uses pre_k_.
+    if (prefetch_ && pred2 && l + 2 < NL) ahead(l + 2, T, pred2, pre_k2_ > 0 ? pre_k2_ : pre_k_);
     if (prefetch_ && pred && l + 1 < NL) ahead(l + 1, T, pred, pre_k_);
-    if (pre_k2_ > 0 && pred2 && l + 2 < NL) ahead(l + 2, T, pred2, pre_k2_);
     host_ms_ += now_ms() - t0;
 }
 
