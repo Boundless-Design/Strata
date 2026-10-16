@@ -33,6 +33,9 @@ struct Context::Impl {
     std::vector<id<MTLLibrary>> libs;
     id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
     uint64_t ev_v = 0;
+    bool rel_armed = false;       // a segment release the host may store before at_cut returns
+    bool rel_fired = false;
+    uint64_t rel_value = 0;
 };
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
@@ -265,6 +268,12 @@ double Context::run_graph(const std::vector<Dispatch>& ds) {
     }
 }
 
+void Context::release_seg() {
+    if (!impl_->rel_armed || impl_->rel_fired || impl_->ev == nil) return;
+    impl_->rel_fired = true;
+    impl_->ev.signaledValue = impl_->rel_value;
+}
+
 double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
                               void* user) {
     @autoreleasepool {
@@ -293,8 +302,13 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
             while (ev.signaledValue < want) {
                 if (cb.status >= MTLCommandBufferStatusCompleted) break;   // an error: the wait below reports it
             }
+            const uint64_t go = base + 2 * s + 2;
+            impl_->rel_value = go;
+            impl_->rel_fired = false;
+            impl_->rel_armed = true;
             at_cut(user, (int) s);
-            ev.signaledValue = base + 2 * s + 2;
+            if (!impl_->rel_fired) ev.signaledValue = go;   // at_cut did not release; do it now
+            impl_->rel_armed = false;
         }
         impl_->ev_v = base + 2 * cuts.size() + 2;
         [cb waitUntilCompleted];

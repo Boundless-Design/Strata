@@ -611,8 +611,16 @@ void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
     if (any) cv_.notify_all();
 }
 
-void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2) {
+void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2,
+                            void (*ready)(void*), void* ready_user) {
     const double t0 = now_ms();
+    bool fired = false;
+    // The next encoder is waiting on this.  It has to run after smap is published and before read-ahead.
+    auto fire = [&]() {
+        if (fired) return;
+        fired = true;
+        if (ready) ready(ready_user);
+    };
     const bool prompt = T > 8;   // a prompt chunk (the GEMM path): nearly every expert of the layer is used
     if (l == 0) { if (prompt) ++p_chunks_; else ++windows_; }
     ++stamp_;                    // the slots this layer uses are pinned until the next handshake
@@ -628,6 +636,7 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
     if (fake_) {
         for (int j = 0; j < nw; ++j)
             if (where_[(size_t) (l * NE + want[j])] < 0) smap_.as<uint32_t>()[l * NE + want[j]] = code_[0];
+        fire();
         host_ms_ += now_ms() - t0;
         return;
     }
@@ -702,9 +711,11 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
             }
             if (any) cv_.notify_all();
         }
+        fire();
         (prompt ? p_host_ms_ : host_ms_) += now_ms() - t0;
         return;
     }
+    fire();
     // read-ahead: layer l + 1 (each token's top pre_k_ of the predicted router logits), then layer l + 2 (top pre_k2_)
     if (prefetch_ && pred && l + 1 < NL) ahead(l + 1, T, pred, pre_k_);
     if (pre_k2_ > 0 && pred2 && l + 2 < NL) ahead(l + 2, T, pred2, pre_k2_);

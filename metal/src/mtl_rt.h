@@ -98,11 +98,13 @@ public:
     // the dispatches between two barriers may overlap.  Returns the GPU time in seconds.
     double run_graph(const std::vector<Dispatch>& ds);
     // run_graph in segments: the dispatches [cuts[s-1], cuts[s]) are one concurrent encoder; after segment s (for
-    // s < cuts.size()) the GPU signals a shared event and waits until the host has run at_cut(s) - the host's turn
-    // between two parts of one committed command buffer (the SSD-streaming handshake: the routing is read, the
-    // missing experts are put in place).  Returns the GPU time in seconds.
+    // s < cuts.size()) the GPU signals a shared event and waits until the host publishes that segment.  at_cut may
+    // call release_seg() once the experts are in place, so host work after that overlaps the next encoder.  If it
+    // does not, the host stores the release when at_cut returns.  Returns the GPU time in seconds.
     double run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
                          void* user);
+    // Store the armed segment release.  No-op when run_graph_seg has not armed one, or it was already stored.
+    void release_seg();
     // One command buffer per `run_cb` call, empty or not: measures commit+wait round trips.
     double run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds = nullptr);
 

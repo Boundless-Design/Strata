@@ -62,7 +62,9 @@ public:
     // The host's turn at layer l: ids = the window's T x topk routed ids; pred = T x 512 router logits of layer l + 1
     // computed from this layer's FFN input (nullptr: no read-ahead).
     // pred2: layer l + 2's, from the same input (STRATA_METAL_PREFETCH2 = its top-k, 0 = off)
-    void at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2 = nullptr);
+    // ready, when set, is called once after this layer's experts are published and before read-ahead.
+    void at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2 = nullptr,
+                  void (*ready)(void*) = nullptr, void* ready_user = nullptr);
     int ahead2() const { return pre_k2_; }
     // a prompt's scratch buffers inside the arena: region() places them (once), hold_region() empties and holds its
     // slots while a prompt runs and gives them back after

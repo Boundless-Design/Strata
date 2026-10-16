@@ -291,7 +291,8 @@ public:
     double win_ms_[MAXT + 1] = {}, win_gpu_[MAXT + 1] = {};
     void at_cut(int s) {
         st_->at_layer(s, seg_T_, TOPK, cut_ids_ ? cut_ids_ : ids_.as<int32_t>(), st_pred_ && !cut_ids_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
-                      predL2_.ptr && !cut_ids_ ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr);
+                      predL2_.ptr && !cut_ids_ ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
+                      [](void* p) { static_cast<mtl::Context*>(p)->release_seg(); }, cx_.get());
     }
 private:
     std::vector<float> ple_hist_;    // NG_HIST x hc_dim normalized rows, row-fastest
